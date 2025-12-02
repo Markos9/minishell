@@ -47,7 +47,7 @@ int main(void)
 
 			if (pids[i] == 0)
 			{
-				execvp(command, line->commands[i].argv);
+				execvp(line->commands[i].argv[0], line->commands[i].argv);
 			}
 		}
 

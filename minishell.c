@@ -28,8 +28,7 @@ int main(void)
         npipes = ncommands - 1;      // define number of pipes to create
 
         /* Create n process to execute line->ncommands */
-
-        pids = (pid_t *)malloc(sizeof(pid_t) * ncommands); // Reserve memorie for the pids, for the ncommnads
+        pids = malloc(sizeof(pid_t) * ncommands); // Reserve memorie for the pids, for the ncommnads
 
         if (ncommands == 1)
         {
@@ -45,10 +44,10 @@ int main(void)
         else
         {
             // Create an array of ncommands pipes
-            pipes = (int **)malloc(sizeof(int *) * npipes);
+            pipes = malloc(sizeof(int *) * npipes);
             for (i = 0; i < npipes; i++)
             {
-                pipes[i] = (int *)malloc(sizeof(int) * 2);
+                pipes[i] = malloc(sizeof(int) * 2);
                 pipe(pipes[i]);
             }
 
@@ -60,53 +59,36 @@ int main(void)
                 pids[i] = fork();
                 if (pids[i] == 0)
                 {
+                    // Proceso hijo i
 
-                    // Close every pipe fd not used
+                    // El primer comando solo reedirecciona la salida
+                    if (i != 0)
+                    {
+                        dup2(pipes[i - 1][0], STDIN_FILENO);
+                    }
+
+                    if (i != ncommands - 1)
+                    {
+
+                        // El ultimo comando solo reedirecciona la entrada
+                        dup2(pipes[i][1], STDOUT_FILENO);
+                    }
+
+                    // Una vez reedireccionado cierro todo
                     for (j = 0; j < npipes; j++)
                     {
-                        if (j != i)
-                        {
-                            if (j == i - 1)
-                            {
-                                // We leave i-1[0] open so commands can read
-                                close(pipes[j][1]);
-                            }
-                            else
-                            {
-                                close(pipes[j][0]);
-                                close(pipes[j][1]);
-                            }
-                        }
-                        else
-                        {
-                            close(pipes[j][0]);
-                        }
+                        close(pipes[j][0]);
+                        close(pipes[j][1]);
                     }
 
-                    // First command changes only standar output to pipe
-                    if (i == 0)
-                    {
-                        dup2(pipes[i][1], STDOUT_FILENO);
-                        close(pipes[i][1]);
-                    }
-                    else if (i == npipes)
-                    {
-                        // Last command needs to change standard input to the pipe
-                        dup2(pipes[i - 1][0], STDIN_FILENO);
-                        close(pipes[i - 1][0]);
-                    }
-                    else
-                    {
-                        // In between commands need to change every input and output
-                        dup2(pipes[i - 1][0], STDIN_FILENO);
-                        dup2(pipes[i][1], STDOUT_FILENO);
-                        close(pipes[i - 1][0]);
-                        close(pipes[i][1]);
-                    }
-
+                    command_name = line->commands[i].argv[0];
                     execvp(command_name, line->commands[i].argv);
+                    perror("Error execvp");
+                    exit(EXIT_FAILURE);
                 }
             }
+
+            // Proceso Padre
 
             for (i = 0; i < npipes; i++)
             {
