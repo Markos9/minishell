@@ -1,4 +1,7 @@
 #include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/wait.h>
 
 #include "parser.h"
 
@@ -6,7 +9,7 @@ int main(void)
 {
 	char buf[1024];
 	tline *line;
-	int i, j;
+	int i;
 
 	printf("==> ");
 	while (fgets(buf, 1024, stdin))
@@ -33,13 +36,24 @@ int main(void)
 		{
 			printf("comando a ejecutarse en background\n");
 		}
+
+		int pids[2];
 		for (i = 0; i < line->ncommands; i++)
 		{
-			printf("orden %d (%s):\n", i, line->commands[i].filename);
-			for (j = 0; j < line->commands[i].argc; j++)
+
+			char *command = line->commands[i].argv[0];
+
+			pids[i] = fork();
+
+			if (pids[i] == 0)
 			{
-				printf("  argumento %d: %s\n", j, line->commands[i].argv[j]);
+				execvp(command, line->commands[i].argv);
 			}
+		}
+
+		for (i = 0; i < line->ncommands; i++)
+		{
+			wait(NULL);
 		}
 		printf("==> ");
 	}
