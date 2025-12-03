@@ -6,6 +6,7 @@
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <signal.h>
+#include <fcntl.h>
 
 #include "parser.h"
 
@@ -18,6 +19,7 @@ int main(void)
     int ncommands;
     int npipes;
     int i, j;
+    int file;
     char *command_name;
 
     printf("msh> ");
@@ -35,6 +37,32 @@ int main(void)
             pids[0] = fork();
             if (pids[0] == 0)
             {
+                // Reedirigr entrada solo al primer proceso
+                if (line->redirect_input != NULL)
+                {
+                    file = open(line->redirect_input, O_RDONLY);
+                    dup2(file, STDIN_FILENO);
+                    close(file);
+                }
+
+                // Reedirigir salida ultimo comando
+
+                if (line->redirect_output != NULL)
+                {
+                    file = open(line->redirect_output, O_WRONLY | O_CREAT, 0666);
+                    dup2(file, STDOUT_FILENO);
+                    close(file);
+                }
+
+                // Reedirigir error
+
+                if (line->redirect_error != NULL)
+                {
+                    file = open(line->redirect_error, O_WRONLY | O_CREAT, 0666);
+                    dup2(file, STDERR_FILENO);
+                    close(file);
+                }
+
                 command_name = line->commands[0].argv[0];
                 execvp(command_name, line->commands[0].argv);
             }
@@ -61,16 +89,41 @@ int main(void)
                 {
                     // Proceso hijo i
 
-                    // El primer comando solo reedirecciona la salida
+                    // Reedirigr entrada solo al primer proceso
+                    if (i == 0 && line->redirect_input != NULL)
+                    {
+                        file = open(line->redirect_input, O_RDONLY);
+                        dup2(file, STDIN_FILENO);
+                        close(file);
+                    }
+
+                    // Reedirigir salida ultimo comando
+                    if (i == ncommands - 1)
+                    {
+                        if (line->redirect_output != NULL)
+                        {
+                            file = open(line->redirect_output, O_WRONLY | O_CREAT, 0666);
+                            dup2(file, STDOUT_FILENO);
+                            close(file);
+                        }
+
+                        if (line->redirect_error != NULL)
+                        {
+                            file = open(line->redirect_error, O_WRONLY | O_CREAT, 0666);
+                            dup2(file, STDERR_FILENO);
+                            close(file);
+                        }
+                    }
+
+                    // Primer proceso no se le reedirige entrada
                     if (i != 0)
                     {
                         dup2(pipes[i - 1][0], STDIN_FILENO);
                     }
 
+                    // Ultimo proceso no se le reedirige la salida
                     if (i != ncommands - 1)
                     {
-
-                        // El ultimo comando solo reedirecciona la entrada
                         dup2(pipes[i][1], STDOUT_FILENO);
                     }
 
