@@ -13,6 +13,7 @@
 #include "parser.h"
 
 void free_pipes_memory(int **pipes, int npipes);
+int open_file(char *filename, int flags);
 
 int main(void)
 {
@@ -50,7 +51,8 @@ int main(void)
                 // Reedirigr entrada solo al primer proceso
                 if (line->redirect_input != NULL)
                 {
-                    file = open(line->redirect_input, O_RDONLY);
+                    file = open_file(line->redirect_input, O_RDONLY);
+
                     dup2(file, STDIN_FILENO);
                     close(file);
                 }
@@ -59,7 +61,7 @@ int main(void)
 
                 if (line->redirect_output != NULL)
                 {
-                    file = open(line->redirect_output, O_WRONLY | O_CREAT, 0666);
+                    file = open_file(line->redirect_output, O_WRONLY | O_CREAT);
                     dup2(file, STDOUT_FILENO);
                     close(file);
                 }
@@ -68,13 +70,15 @@ int main(void)
 
                 if (line->redirect_error != NULL)
                 {
-                    file = open(line->redirect_error, O_WRONLY | O_CREAT, 0666);
+                    file = open_file(line->redirect_error, O_WRONLY | O_CREAT);
                     dup2(file, STDERR_FILENO);
                     close(file);
                 }
 
                 command_name = line->commands[0].argv[0];
                 execvp(command_name, line->commands[0].argv);
+                fprintf(stderr, "%s: No se encuentra el mandato", command_name);
+                exit(EXIT_FAILURE);
             }
         }
         // Caso: 2 o mas comandos
@@ -108,7 +112,7 @@ int main(void)
                     // Reedirigr entrada solo al primer proceso
                     if (i == 0 && line->redirect_input != NULL)
                     {
-                        file = open(line->redirect_input, O_RDONLY);
+                        file = open_file(line->redirect_input, O_RDONLY);
                         dup2(file, STDIN_FILENO);
                         close(file);
                     }
@@ -118,14 +122,14 @@ int main(void)
                     {
                         if (line->redirect_output != NULL)
                         {
-                            file = open(line->redirect_output, O_WRONLY | O_CREAT, 0666);
+                            file = open_file(line->redirect_output, O_WRONLY | O_CREAT);
                             dup2(file, STDOUT_FILENO);
                             close(file);
                         }
 
                         if (line->redirect_error != NULL)
                         {
-                            file = open(line->redirect_error, O_WRONLY | O_CREAT, 0666);
+                            file = open_file(line->redirect_error, O_WRONLY | O_CREAT);
                             dup2(file, STDERR_FILENO);
                             close(file);
                         }
@@ -152,7 +156,7 @@ int main(void)
 
                     command_name = line->commands[i].argv[0];
                     execvp(command_name, line->commands[i].argv);
-                    perror("Error execvp");
+                    fprintf(stderr, "%s: No se encuentra el mandato", command_name);
                     exit(EXIT_FAILURE);
                 }
             }
@@ -197,4 +201,29 @@ void free_pipes_memory(int **pipes, int npipes)
     }
 
     free(pipes);
+}
+
+int open_file(char *filename, int flags)
+{
+    int fd;
+    int access_mode = flags & O_ACCMODE;
+
+    if (access_mode == O_RDONLY)
+    {
+        fd = open(filename, flags);
+    }
+    else if (access_mode == O_WRONLY)
+    {
+        fd = open(filename, flags, 0666);
+    }
+
+    if (fd == -1)
+    {
+        fprintf(stderr, "'%s': Error\n%s\n",
+                filename,
+                strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+
+    return fd;
 }
