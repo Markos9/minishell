@@ -7,8 +7,12 @@
 #include <sys/types.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <ctype.h>
+#include <errno.h>
 
 #include "parser.h"
+
+void free_pipes_memory(int **pipes, int npipes);
 
 int main(void)
 {
@@ -27,15 +31,21 @@ int main(void)
     {
         line = tokenize(buf);        // Get TLine object
         ncommands = line->ncommands; // Get number of commands
-        npipes = ncommands - 1;      // define number of pipes to create
 
-        /* Create n process to execute line->ncommands */
-        pids = malloc(sizeof(pid_t) * ncommands); // Reserve memorie for the pids, for the ncommnads
+        /* Crear n procesos para ejecutar line->ncommands */
 
+        pids = malloc(sizeof(pid_t) * ncommands); // Reservar memoria para los pids, de ncommnads
+
+        // Caso: Un unico comando
         if (ncommands == 1)
         {
             pids[0] = fork();
-            if (pids[0] == 0)
+            if (pids[0] < 0)
+            {
+                fprintf(stderr, "Falló el fork().\n%s\n", strerror(errno));
+                exit(1);
+            }
+            else if (pids[0] == 0)
             {
                 // Reedirigr entrada solo al primer proceso
                 if (line->redirect_input != NULL)
@@ -66,12 +76,13 @@ int main(void)
                 command_name = line->commands[0].argv[0];
                 execvp(command_name, line->commands[0].argv);
             }
-
-            wait(NULL);
         }
+        // Caso: 2 o mas comandos
         else
         {
             // Create an array of ncommands pipes
+
+            npipes = ncommands - 1; // define number of pipes to create
             pipes = malloc(sizeof(int *) * npipes);
             for (i = 0; i < npipes; i++)
             {
@@ -85,7 +96,12 @@ int main(void)
                 command_name = line->commands[i].argv[0];
 
                 pids[i] = fork();
-                if (pids[i] == 0)
+                if (pids[i] < 0)
+                { /* Error */
+                    fprintf(stderr, "Falló el fork() con pid: %d.\n%s\n", pids[i], strerror(errno));
+                    exit(1);
+                }
+                else if (pids[i] == 0)
                 {
                     // Proceso hijo i
 
@@ -148,14 +164,37 @@ int main(void)
                 close(pipes[i][0]);
                 close(pipes[i][1]);
             }
-            for (i = 0; i < ncommands; i++)
-            {
-                wait(NULL);
-            }
         }
 
+        // Esperar hijos y liberar memoria
+
+        for (i = 0; i < ncommands; i++)
+        {
+            wait(NULL);
+        }
+
+        free(pids);
+        free_pipes_memory(pipes, npipes);
         printf("\nmsh> ");
     }
 
     return 0;
+}
+
+void free_pipes_memory(int **pipes, int npipes)
+{
+    if (pipes == NULL)
+    {
+        return;
+    }
+
+    for (int i = 0; i < npipes; i++)
+    {
+        if (pipes[i] != NULL)
+        {
+            free(pipes[i]);
+        }
+    }
+
+    free(pipes);
 }
