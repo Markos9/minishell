@@ -5,6 +5,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <ctype.h>
@@ -15,6 +16,8 @@
 void free_pipes_memory(int **pipes, int npipes);
 int open_file(char *filename, int flags);
 void change_dir(tline *line);
+void umask_command(tline *line);
+mode_t str_to_octal(char *str);
 
 int main(void)
 {
@@ -45,6 +48,10 @@ int main(void)
                 change_dir(line);
             }
             // Otros comandos
+            else if (strcmp(line->commands[0].argv[0], "umask") == 0)
+            {
+                umask_command(line);
+            }
             else
             {
 
@@ -262,4 +269,63 @@ int open_file(char *filename, int flags)
     }
 
     return fd;
+}
+
+void umask_command(tline *line)
+{
+    mode_t mask;
+
+    if (line->commands[0].argc > 2)
+    {
+        return;
+    }
+    // Caso 1: Imprimir mascara actual
+    if (line->commands[0].argc == 1)
+    {
+        mask = umask(0);
+        printf("0%o\n", (unsigned int)mask);
+        umask(mask);
+    }
+    else if (line->commands[0].argc == 2)
+    {
+        // 1. Comprobar que el argumento sea un octal
+
+        mask = str_to_octal(line->commands[0].argv[1]);
+        if (mask == (mode_t)-1)
+        {
+            fprintf(stderr, "%s no es un octal\n", line->commands[0].argv[1]);
+            return;
+        }
+
+        // 2. Cambiar masacara
+        umask(mask);
+    }
+
+    return;
+}
+
+mode_t str_to_octal(char *str)
+{
+    long long_val;
+    mode_t octal_num;
+
+    // Comrporbar que es un octal
+    if (str == NULL || *str == '\0')
+    {
+        return -1;
+    }
+
+    for (int i = 0; str[i] != '\0'; i++)
+    {
+        if (str[i] < '0' || str[i] > '7')
+        {
+            return -1;
+        }
+    }
+
+    // Convertir de str a octal
+    long_val = strtol(str, NULL, 8);
+    octal_num = (mode_t)long_val;
+
+    return (mode_t)octal_num;
 }
