@@ -9,7 +9,7 @@ int main(void)
 {
 	char buf[1024];
 	tline *line;
-	int i;
+	int i, j;
 
 	printf("==> ");
 	while (fgets(buf, 1024, stdin))
@@ -37,23 +37,13 @@ int main(void)
 			printf("comando a ejecutarse en background\n");
 		}
 
-		int pids[2];
 		for (i = 0; i < line->ncommands; i++)
 		{
-
-			char *command = line->commands[i].argv[0];
-
-			pids[i] = fork();
-
-			if (pids[i] == 0)
+			printf("orden %d (%s): \n", i, line->commands[i].filename);
+			for (j = 0; j < line->commands[i].argc; j++)
 			{
-				execvp(line->commands[i].argv[0], line->commands[i].argv);
+				printf("	argumento %d: %s\n", j, line->commands[i].argv[j]);
 			}
-		}
-
-		for (i = 0; i < line->ncommands; i++)
-		{
-			wait(NULL);
 		}
 		printf("==> ");
 	}

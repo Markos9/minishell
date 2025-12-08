@@ -13,7 +13,26 @@
 
 #include "parser.h"
 
-void one_command_exec(tline *line);
+#define BUFFER_SIZE 1024
+#define MAX_PROCESSES 10
+
+typedef enum
+{
+    RUNNING,
+    FINISHED,
+    STOPPED
+} ProcessStatus;
+
+typedef struct
+{
+    pid_t pid;
+    char command_line[BUFFER_SIZE];
+    ProcessStatus status
+} BackgroundProcess;
+
+BackgroundProcess background_processes_list[MAX_PROCESSES];
+
+void one_command_exec(tline *line, char buf[BUFFER_SIZE]);
 void multiple_commands_exec(tline *line);
 void free_pipes_memory(int **pipes, int npipes);
 int open_file(char *filename, int flags);
@@ -21,11 +40,22 @@ void change_dir(tline *line);
 void umask_command(tline *line);
 mode_t str_to_octal(char *str);
 
+char *status_to_str(ProcessStatus status);
+void add_process(pid_t pid, char command_line[BUFFER_SIZE]);
+void change_process_status(pid_t pid);
+void remove_process(pid_t pid);
+
 int main(void)
 {
-    char buf[1024];
+    char buf[BUFFER_SIZE];
     tline *line;
     int ncommands;
+
+    // inicializar lista de procesos en segundo plano
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        background_processes_list[i].status = FINISHED;
+    }
 
     printf("msh> ");
     while (fgets(buf, 1024, stdin))
@@ -53,7 +83,7 @@ int main(void)
                 // Caso: Un unico comando
                 if (ncommands == 1)
                 {
-                    one_command_exec(line);
+                    one_command_exec(line, buf);
                 }
                 // Caso: 2 o mas comandos
                 else
@@ -68,7 +98,7 @@ int main(void)
     return 0;
 }
 
-void one_command_exec(tline *line)
+void one_command_exec(tline *line, char buf[BUFFER_SIZE])
 {
     pid_t pid;
     int file;
@@ -82,16 +112,12 @@ void one_command_exec(tline *line)
     }
     else if (pid == 0)
     {
-        // Reedirigr entrada solo al primer proceso
         if (line->redirect_input != NULL)
         {
             file = open_file(line->redirect_input, O_RDONLY);
-
             dup2(file, STDIN_FILENO);
             close(file);
         }
-
-        // Reedirigir salida ultimo comando
 
         if (line->redirect_output != NULL)
         {
@@ -99,8 +125,6 @@ void one_command_exec(tline *line)
             dup2(file, STDOUT_FILENO);
             close(file);
         }
-
-        // Reedirigir error
 
         if (line->redirect_error != NULL)
         {
@@ -114,8 +138,15 @@ void one_command_exec(tline *line)
         fprintf(stderr, "%s: No se encuentra el mandato", command_name);
         exit(EXIT_FAILURE);
     }
-
-    wait(NULL);
+    if (line->background)
+    {
+        // Add process to
+        add_process(pid, buf);
+    }
+    else
+    {
+        wait(NULL);
+    }
 }
 
 void multiple_commands_exec(tline *line)
@@ -148,7 +179,7 @@ void multiple_commands_exec(tline *line)
         if (pids[i] < 0)
         { /* Error */
             fprintf(stderr, "Falló el fork() con pid: %d.\n%s\n", pids[i], strerror(errno));
-            exit(1);
+            exit(EXIT_FAILURE);
         }
         else if (pids[i] == 0)
         {
@@ -158,11 +189,6 @@ void multiple_commands_exec(tline *line)
             if (i == 0 && line->redirect_input != NULL)
             {
                 file = open_file(line->redirect_input, O_RDONLY);
-                if (file < 0)
-                {
-                    fprintf(stderr, "Error input: %s\n", strerror(errno));
-                    exit(1);
-                }
                 dup2(file, STDIN_FILENO);
                 close(file);
             }
@@ -349,4 +375,45 @@ mode_t str_to_octal(char *str)
     octal_num = (mode_t)long_val;
 
     return (mode_t)octal_num;
+}
+
+char *status_to_str(ProcessStatus status)
+{
+    switch (status)
+    {
+    case RUNNING:
+        return "Running";
+        break;
+    case STOPPED:
+        return "Stopped";
+        break;
+    case FINISHED:
+        return "Finished";
+        break;
+    }
+
+    return NULL;
+}
+
+void add_process(pid_t pid, char command_line[BUFFER_SIZE])
+{
+    int slot = -1;
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        if (background_processes_list[i].status == FINISHED)
+        {
+            slot = i;
+            break;
+        }
+    }
+
+    if (slot == -1)
+    {
+        fprintf(stderr, "Número maximo de procesos alcanzado\n");
+        exit(EXIT_FAILURE);
+    }
+
+    background_processes_list[slot].pid = pid;
+    strcpy(background_processes_list[slot].command_line, command_line);
+    background_processes_list[slot].status = RUNNING;
 }
