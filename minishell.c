@@ -13,6 +13,8 @@
 
 #include "parser.h"
 
+void one_command_exec(tline *line);
+void multiple_commands_exec(tline *line);
 void free_pipes_memory(int **pipes, int npipes);
 int open_file(char *filename, int flags);
 void change_dir(tline *line);
@@ -22,188 +24,207 @@ mode_t str_to_octal(char *str);
 int main(void)
 {
     char buf[1024];
-    pid_t *pids;
     tline *line;
-    int **pipes;
     int ncommands;
-    int npipes;
-    int i, j;
-    int file;
-    char *command_name;
 
     printf("msh> ");
     while (fgets(buf, 1024, stdin))
     {
-        pipes = NULL;
-        npipes = 0;
+
         line = tokenize(buf);
         if (line != NULL)
         {
 
-            ncommands = line->ncommands;
             // Cambiar de directorio
-
             if (strcmp(line->commands[0].argv[0], "cd") == 0)
             {
                 change_dir(line);
             }
-            // Otros comandos
+            // Umask
             else if (strcmp(line->commands[0].argv[0], "umask") == 0)
             {
                 umask_command(line);
             }
             else
             {
-
-                /* Crear n procesos para ejecutar line->ncommands */
-                pids = malloc(sizeof(pid_t) * ncommands); // Reservar memoria para los pids, de ncommnads
+                // Otros commandos
+                ncommands = line->ncommands;
 
                 // Caso: Un unico comando
                 if (ncommands == 1)
                 {
-
-                    pids[0] = fork();
-                    if (pids[0] < 0)
-                    {
-                        fprintf(stderr, "Falló el fork().\n%s\n", strerror(errno));
-                        exit(1);
-                    }
-                    else if (pids[0] == 0)
-                    {
-                        // Reedirigr entrada solo al primer proceso
-                        if (line->redirect_input != NULL)
-                        {
-                            file = open_file(line->redirect_input, O_RDONLY);
-
-                            dup2(file, STDIN_FILENO);
-                            close(file);
-                        }
-
-                        // Reedirigir salida ultimo comando
-
-                        if (line->redirect_output != NULL)
-                        {
-                            file = open_file(line->redirect_output, O_WRONLY | O_CREAT);
-                            dup2(file, STDOUT_FILENO);
-                            close(file);
-                        }
-
-                        // Reedirigir error
-
-                        if (line->redirect_error != NULL)
-                        {
-                            file = open_file(line->redirect_error, O_WRONLY | O_CREAT);
-                            dup2(file, STDERR_FILENO);
-                            close(file);
-                        }
-
-                        command_name = line->commands[0].argv[0];
-                        execvp(command_name, line->commands[0].argv);
-                        fprintf(stderr, "%s: No se encuentra el mandato", command_name);
-                        exit(EXIT_FAILURE);
-                    }
+                    one_command_exec(line);
                 }
                 // Caso: 2 o mas comandos
                 else
                 {
-                    // Create an array of ncommands pipes
-
-                    npipes = ncommands - 1; // define number of pipes to create
-                    pipes = malloc(sizeof(int *) * npipes);
-                    for (i = 0; i < npipes; i++)
-                    {
-                        pipes[i] = malloc(sizeof(int) * 2);
-                        pipe(pipes[i]);
-                    }
-
-                    // Create processes and execute commands
-                    for (i = 0; i < ncommands; i++)
-                    {
-                        command_name = line->commands[i].argv[0];
-
-                        pids[i] = fork();
-                        if (pids[i] < 0)
-                        { /* Error */
-                            fprintf(stderr, "Falló el fork() con pid: %d.\n%s\n", pids[i], strerror(errno));
-                            exit(1);
-                        }
-                        else if (pids[i] == 0)
-                        {
-                            // Proceso hijo i
-
-                            // Reedirigr entrada solo al primer proceso
-                            if (i == 0 && line->redirect_input != NULL)
-                            {
-                                file = open_file(line->redirect_input, O_RDONLY);
-                                dup2(file, STDIN_FILENO);
-                                close(file);
-                            }
-
-                            // Reedirigir salida ultimo comando
-                            if (i == ncommands - 1)
-                            {
-                                if (line->redirect_output != NULL)
-                                {
-                                    file = open_file(line->redirect_output, O_WRONLY | O_CREAT);
-                                    dup2(file, STDOUT_FILENO);
-                                    close(file);
-                                }
-
-                                if (line->redirect_error != NULL)
-                                {
-                                    file = open_file(line->redirect_error, O_WRONLY | O_CREAT);
-                                    dup2(file, STDERR_FILENO);
-                                    close(file);
-                                }
-                            }
-
-                            // Primer proceso no se le reedirige entrada
-                            if (i != 0)
-                            {
-                                dup2(pipes[i - 1][0], STDIN_FILENO);
-                            }
-
-                            // Ultimo proceso no se le reedirige la salida
-                            if (i != ncommands - 1)
-                            {
-                                dup2(pipes[i][1], STDOUT_FILENO);
-                            }
-
-                            // Una vez reedireccionado cierro todo
-                            for (j = 0; j < npipes; j++)
-                            {
-                                close(pipes[j][0]);
-                                close(pipes[j][1]);
-                            }
-
-                            command_name = line->commands[i].argv[0];
-                            execvp(command_name, line->commands[i].argv);
-                            fprintf(stderr, "%s: No se encuentra el mandato", command_name);
-                            exit(EXIT_FAILURE);
-                        }
-                    }
-                    // Proceso Padre
-                    for (i = 0; i < npipes; i++)
-                    {
-                        close(pipes[i][0]);
-                        close(pipes[i][1]);
-                    }
+                    multiple_commands_exec(line);
                 }
-
-                // Esperar hijos y liberar memoria para 1 o mas comandos, cuando no sean: cd
-                for (i = 0; i < ncommands; i++)
-                {
-                    wait(NULL);
-                }
-
-                free(pids);
-                free_pipes_memory(pipes, npipes);
             }
         }
 
         printf("\nmsh> ");
     }
     return 0;
+}
+
+void one_command_exec(tline *line)
+{
+    pid_t pid;
+    int file;
+    char *command_name;
+
+    pid = fork();
+    if (pid < 0)
+    {
+        fprintf(stderr, "Falló el fork().\n%s\n", strerror(errno));
+        exit(1);
+    }
+    else if (pid == 0)
+    {
+        // Reedirigr entrada solo al primer proceso
+        if (line->redirect_input != NULL)
+        {
+            file = open_file(line->redirect_input, O_RDONLY);
+
+            dup2(file, STDIN_FILENO);
+            close(file);
+        }
+
+        // Reedirigir salida ultimo comando
+
+        if (line->redirect_output != NULL)
+        {
+            file = open_file(line->redirect_output, O_WRONLY | O_CREAT);
+            dup2(file, STDOUT_FILENO);
+            close(file);
+        }
+
+        // Reedirigir error
+
+        if (line->redirect_error != NULL)
+        {
+            file = open_file(line->redirect_error, O_WRONLY | O_CREAT);
+            dup2(file, STDERR_FILENO);
+            close(file);
+        }
+
+        command_name = line->commands[0].argv[0];
+        execvp(command_name, line->commands[0].argv);
+        fprintf(stderr, "%s: No se encuentra el mandato", command_name);
+        exit(EXIT_FAILURE);
+    }
+
+    wait(NULL);
+}
+
+void multiple_commands_exec(tline *line)
+{
+    int **pipes;
+    pid_t *pids;
+    int npipes, ncommands;
+    char *command_name;
+    int i, j, file;
+
+    ncommands = line->ncommands;
+    npipes = ncommands - 1; // define number of pipes to create
+
+    pids = malloc(sizeof(pid_t) * ncommands); // Reservar memoria para los pids, de ncommnads
+    pipes = malloc(sizeof(int *) * npipes);
+
+    /* Crear tuberias para ejecutar line->ncommands */
+    for (i = 0; i < npipes; i++)
+    {
+        pipes[i] = malloc(sizeof(int) * 2);
+        pipe(pipes[i]);
+    }
+
+    // Crear n procesos para ejecutar ncommands
+    for (i = 0; i < ncommands; i++)
+    {
+        command_name = line->commands[i].argv[0];
+
+        pids[i] = fork();
+        if (pids[i] < 0)
+        { /* Error */
+            fprintf(stderr, "Falló el fork() con pid: %d.\n%s\n", pids[i], strerror(errno));
+            exit(1);
+        }
+        else if (pids[i] == 0)
+        {
+            // Proceso hijo i
+
+            // Reedirigr entrada solo al primer proceso
+            if (i == 0 && line->redirect_input != NULL)
+            {
+                file = open_file(line->redirect_input, O_RDONLY);
+                if (file < 0)
+                {
+                    fprintf(stderr, "Error input: %s\n", strerror(errno));
+                    exit(1);
+                }
+                dup2(file, STDIN_FILENO);
+                close(file);
+            }
+
+            // Reedirigir salida ultimo comando
+            if (i == ncommands - 1)
+            {
+                if (line->redirect_output != NULL)
+                {
+                    file = open_file(line->redirect_output, O_WRONLY | O_CREAT);
+                    dup2(file, STDOUT_FILENO);
+                    close(file);
+                }
+
+                if (line->redirect_error != NULL)
+                {
+                    file = open_file(line->redirect_error, O_WRONLY | O_CREAT);
+                    dup2(file, STDERR_FILENO);
+                    close(file);
+                }
+            }
+
+            // Primer proceso no se le reedirige entrada a un pipe
+            if (i != 0)
+            {
+                dup2(pipes[i - 1][0], STDIN_FILENO);
+            }
+
+            // Ultimo proceso no se le reedirige la salida a un pipe
+            if (i != ncommands - 1)
+            {
+                dup2(pipes[i][1], STDOUT_FILENO);
+            }
+
+            // Una vez reedireccionado cierro todo
+            for (j = 0; j < npipes; j++)
+            {
+                close(pipes[j][0]);
+                close(pipes[j][1]);
+            }
+
+            execvp(command_name, line->commands[i].argv);
+            fprintf(stderr, "%s: No se encuentra el mandato", command_name);
+            exit(EXIT_FAILURE);
+        }
+    }
+
+    // Proceso Padre
+    for (i = 0; i < npipes; i++)
+    {
+        close(pipes[i][0]);
+        close(pipes[i][1]);
+    }
+
+    // Esperar hijos y liberar memoria para 1 o mas comandos, cuando no sean: cd
+    for (i = 0; i < ncommands; i++)
+    {
+        waitpid(pids[i], NULL, 0);
+    }
+
+    free(pids);
+    free_pipes_memory(pipes, npipes);
 }
 
 void free_pipes_memory(int **pipes, int npipes)
@@ -283,7 +304,7 @@ void umask_command(tline *line)
     if (line->commands[0].argc == 1)
     {
         mask = umask(0);
-        printf("0%o\n", (unsigned int)mask);
+        printf("%04o\n", (unsigned int)mask);
         umask(mask);
     }
     else if (line->commands[0].argc == 2)
