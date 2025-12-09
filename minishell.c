@@ -18,8 +18,8 @@
 
 typedef enum
 {
-    RUNNING,
     FINISHED,
+    RUNNING,
     STOPPED
 } ProcessStatus;
 
@@ -27,10 +27,10 @@ typedef struct
 {
     pid_t pid;
     char command_line[BUFFER_SIZE];
-    ProcessStatus status
-} BackgroundProcess;
+    ProcessStatus status;
+} Job;
 
-BackgroundProcess background_processes_list[MAX_PROCESSES];
+Job jobs_list[MAX_PROCESSES];
 
 void one_command_exec(tline *line, char buf[BUFFER_SIZE]);
 void multiple_commands_exec(tline *line);
@@ -40,10 +40,10 @@ void change_dir(tline *line);
 void umask_command(tline *line);
 mode_t str_to_octal(char *str);
 
-char *status_to_str(ProcessStatus status);
 void add_process(pid_t pid, char command_line[BUFFER_SIZE]);
 void change_process_status(pid_t pid);
-void remove_process(pid_t pid);
+void background_process_check();
+void jobs();
 
 int main(void)
 {
@@ -54,42 +54,48 @@ int main(void)
     // inicializar lista de procesos en segundo plano
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
-        background_processes_list[i].status = FINISHED;
+        jobs_list[i].status = FINISHED;
     }
 
     printf("msh> ");
-    while (fgets(buf, 1024, stdin))
+    while (fgets(buf, BUFFER_SIZE, stdin))
     {
-
+        background_process_check();
         line = tokenize(buf);
-        if (line != NULL)
+        if (line == NULL || line->ncommands == 0)
         {
+            printf("msh> ");
+            continue;
+        }
 
-            // Cambiar de directorio
-            if (strcmp(line->commands[0].argv[0], "cd") == 0)
+        // Cambiar de directorio
+        if (strcmp(line->commands[0].argv[0], "cd") == 0)
+        {
+            change_dir(line);
+        }
+        // Umask
+        else if (strcmp(line->commands[0].argv[0], "umask") == 0)
+        {
+            umask_command(line);
+        }
+        else if (strcmp(line->commands[0].argv[0], "jobs") == 0)
+        {
+            jobs();
+        }
+        else
+        {
+            // Otros commandos
+            ncommands = line->ncommands;
+
+            // Caso: Un unico comando
+            if (ncommands == 1)
             {
-                change_dir(line);
+                one_command_exec(line, buf);
             }
-            // Umask
-            else if (strcmp(line->commands[0].argv[0], "umask") == 0)
-            {
-                umask_command(line);
-            }
+            // Caso: 2 o mas comandos
             else
             {
-                // Otros commandos
-                ncommands = line->ncommands;
-
-                // Caso: Un unico comando
-                if (ncommands == 1)
-                {
-                    one_command_exec(line, buf);
-                }
-                // Caso: 2 o mas comandos
-                else
-                {
-                    multiple_commands_exec(line);
-                }
+                multiple_commands_exec(line);
             }
         }
 
@@ -140,12 +146,12 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
     }
     if (line->background)
     {
-        // Add process to
+        // Add process to list
         add_process(pid, buf);
     }
     else
     {
-        wait(NULL);
+        waitpid(pid, NULL, 0);
     }
 }
 
@@ -377,30 +383,14 @@ mode_t str_to_octal(char *str)
     return (mode_t)octal_num;
 }
 
-char *status_to_str(ProcessStatus status)
-{
-    switch (status)
-    {
-    case RUNNING:
-        return "Running";
-        break;
-    case STOPPED:
-        return "Stopped";
-        break;
-    case FINISHED:
-        return "Finished";
-        break;
-    }
-
-    return NULL;
-}
-
+// Agregar Proceso a jobs
 void add_process(pid_t pid, char command_line[BUFFER_SIZE])
 {
     int slot = -1;
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
-        if (background_processes_list[i].status == FINISHED)
+        // Si un proceso esta terminado, lo puedo reemplazar de la lista
+        if (jobs_list[i].status == FINISHED)
         {
             slot = i;
             break;
@@ -413,7 +403,44 @@ void add_process(pid_t pid, char command_line[BUFFER_SIZE])
         exit(EXIT_FAILURE);
     }
 
-    background_processes_list[slot].pid = pid;
-    strcpy(background_processes_list[slot].command_line, command_line);
-    background_processes_list[slot].status = RUNNING;
+    jobs_list[slot].pid = pid;
+    strcpy(jobs_list[slot].command_line, command_line);
+    jobs_list[slot].status = RUNNING;
+
+    printf("[%d] %d\n", slot + 1, pid);
+}
+
+void background_process_check()
+{
+    int status;
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        if (jobs_list[i].status == RUNNING)
+        {
+            status = waitpid(jobs_list[i].pid, NULL, WNOHANG);
+            if (status > 0)
+            {
+                // El hijo ha acabado
+                jobs_list[i].status = FINISHED;
+                printf("[%d]+  Finished \t %s\n", i + 1, jobs_list[i].command_line);
+            }
+        }
+    }
+}
+
+void jobs()
+{
+    Job job;
+    for (int i = 0; i < MAX_PROCESSES; i++)
+    {
+        job = jobs_list[i];
+        if (job.status == RUNNING)
+        {
+            printf("[%d]+  Running \t %s\n", i + 1, job.command_line);
+        }
+        else if (job.status == STOPPED)
+        {
+            printf("[%d]-  Stopped \t %s\n", i + 1, job.command_line);
+        }
+    }
 }
