@@ -33,10 +33,12 @@ typedef struct
 Job jobs_list[MAX_PROCESSES];
 
 void one_command_exec(tline *line, char buf[BUFFER_SIZE]);
-void multiple_commands_exec(tline *line);
+void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE]);
 void free_pipes_memory(int **pipes, int npipes);
 int open_file(char *filename, int flags);
+
 void change_dir(tline *line);
+
 void umask_command(tline *line);
 mode_t str_to_octal(char *str);
 
@@ -95,7 +97,7 @@ int main(void)
             // Caso: 2 o mas comandos
             else
             {
-                multiple_commands_exec(line);
+                multiple_commands_exec(line, buf);
             }
         }
 
@@ -118,6 +120,7 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
     }
     else if (pid == 0)
     {
+
         if (line->redirect_input != NULL)
         {
             file = open_file(line->redirect_input, O_RDONLY);
@@ -139,14 +142,17 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
             close(file);
         }
 
+        setpgid(0, 0);
         command_name = line->commands[0].argv[0];
         execvp(command_name, line->commands[0].argv);
         fprintf(stderr, "%s: No se encuentra el mandato", command_name);
         exit(EXIT_FAILURE);
     }
+
     if (line->background)
     {
         // Add process to list
+        setpgid(pid, pid);
         add_process(pid, buf);
     }
     else
@@ -155,13 +161,14 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
     }
 }
 
-void multiple_commands_exec(tline *line)
+void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
 {
     int **pipes;
     pid_t *pids;
     int npipes, ncommands;
     char *command_name;
     int i, j, file;
+    pid_t group_leader = 0;
 
     ncommands = line->ncommands;
     npipes = ncommands - 1; // define number of pipes to create
@@ -236,9 +243,31 @@ void multiple_commands_exec(tline *line)
                 close(pipes[j][1]);
             }
 
+            // Crear grupo de procesos
+            if (i == 0)
+            {
+                setpgid(0, 0);
+            }
+            else
+            {
+                setpgid(0, group_leader);
+            }
+
             execvp(command_name, line->commands[i].argv);
             fprintf(stderr, "%s: No se encuentra el mandato", command_name);
             exit(EXIT_FAILURE);
+        }
+
+        // Proceso Padre dentro del loop asigna los pids al grupo
+        if (i == 0)
+        {
+            // el primer proceos se define como lider
+            group_leader = pids[i];
+            setpgid(pids[i], group_leader);
+        }
+        else
+        {
+            setpgid(pids[i], group_leader);
         }
     }
 
@@ -249,10 +278,17 @@ void multiple_commands_exec(tline *line)
         close(pipes[i][1]);
     }
 
-    // Esperar hijos y liberar memoria para 1 o mas comandos, cuando no sean: cd
-    for (i = 0; i < ncommands; i++)
+    // Esperar hijos y liberar memoria para 1 o mas comandos, cuando no seasn: cd
+    if (line->background)
     {
-        waitpid(pids[i], NULL, 0);
+        add_process(group_leader, buf);
+    }
+    else
+    {
+        for (i = 0; i < ncommands; i++)
+        {
+            waitpid(pids[i], NULL, 0);
+        }
     }
 
     free(pids);
@@ -412,15 +448,18 @@ void add_process(pid_t pid, char command_line[BUFFER_SIZE])
 
 void background_process_check()
 {
-    int status;
+    int wait_status;
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
         if (jobs_list[i].status == RUNNING)
         {
-            status = waitpid(jobs_list[i].pid, NULL, WNOHANG);
-            if (status > 0)
+            while ((wait_status = waitpid(jobs_list[i].pid, 0, WNOHANG)) > 0)
             {
-                // El hijo ha acabado
+            }
+
+            // Si wait_status == -1 y errno == ECHILD, todos los procesos del grupo han terminado
+            if (wait_status == -1 && errno == ECHILD)
+            {
                 jobs_list[i].status = FINISHED;
                 printf("[%d]+  Finished \t %s\n", i + 1, jobs_list[i].command_line);
             }
