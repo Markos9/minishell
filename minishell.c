@@ -47,12 +47,16 @@ void change_process_status(pid_t pid);
 void background_process_check();
 void jobs();
 
+void handler_sigtstp();
+
 int main(void)
 {
     char buf[BUFFER_SIZE];
     tline *line;
     int ncommands;
 
+    signal(SIGINT, SIG_IGN);
+    signal(SIGTSTP, SIG_IGN);
     // inicializar lista de procesos en segundo plano
     for (int i = 0; i < MAX_PROCESSES; i++)
     {
@@ -121,6 +125,8 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
     else if (pid == 0)
     {
 
+        signal(SIGINT, SIG_DFL);
+
         if (line->redirect_input != NULL)
         {
             file = open_file(line->redirect_input, O_RDONLY);
@@ -142,8 +148,12 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
             close(file);
         }
 
-        setpgid(0, 0);
+        if (line->background)
+        {
+            setpgid(0, 0);
+        }
         command_name = line->commands[0].argv[0];
+
         execvp(command_name, line->commands[0].argv);
         fprintf(stderr, "%s: No se encuentra el mandato", command_name);
         exit(EXIT_FAILURE);
@@ -197,6 +207,7 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
         else if (pids[i] == 0)
         {
             // Proceso hijo i
+            signal(SIGINT, SIG_DFL);
 
             // Reedirigr entrada solo al primer proceso
             if (i == 0 && line->redirect_input != NULL)
@@ -244,13 +255,16 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
             }
 
             // Crear grupo de procesos
-            if (i == 0)
+            if (line->background)
             {
-                setpgid(0, 0);
-            }
-            else
-            {
-                setpgid(0, group_leader);
+                if (i == 0)
+                {
+                    setpgid(0, 0);
+                }
+                else
+                {
+                    setpgid(0, group_leader);
+                }
             }
 
             execvp(command_name, line->commands[i].argv);
@@ -482,4 +496,8 @@ void jobs()
             printf("[%d]-  Stopped \t %s\n", i + 1, job.command_line);
         }
     }
+}
+
+void handler_sigtstp()
+{
 }
