@@ -14,7 +14,7 @@
 #include "parser.h"
 
 #define BUFFER_SIZE 1024
-#define MAX_PROCESSES 10
+#define MAX_JOBS 10
 
 typedef enum
 {
@@ -25,12 +25,15 @@ typedef enum
 
 typedef struct
 {
-    pid_t pid;
+    pid_t pgid;
     char command_line[BUFFER_SIZE];
     ProcessStatus status;
+
+    pid_t *pids; // Lista de procesos en el trabajo
+    int num_pids;
 } Job;
 
-Job jobs_list[MAX_PROCESSES];
+Job jobs_list[MAX_JOBS];
 
 void one_command_exec(tline *line, char buf[BUFFER_SIZE]);
 void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE]);
@@ -42,7 +45,7 @@ void change_dir(tline *line);
 void umask_command(tline *line);
 mode_t str_to_octal(char *str);
 
-void add_process(pid_t pid, char command_line[BUFFER_SIZE]);
+void add_job(pid_t *pids, pid_t pgid, char command_line[BUFFER_SIZE], int ncommands);
 void change_process_status(pid_t pid);
 void background_process_check();
 void jobs();
@@ -58,7 +61,7 @@ int main(void)
     signal(SIGINT, SIG_IGN);
     signal(SIGTSTP, SIG_IGN);
     // inicializar lista de procesos en segundo plano
-    for (int i = 0; i < MAX_PROCESSES; i++)
+    for (int i = 0; i < MAX_JOBS; i++)
     {
         jobs_list[i].status = FINISHED;
     }
@@ -112,17 +115,18 @@ int main(void)
 
 void one_command_exec(tline *line, char buf[BUFFER_SIZE])
 {
-    pid_t pid;
+    pid_t *pid;
     int file;
     char *command_name;
 
-    pid = fork();
-    if (pid < 0)
+    pid = malloc(sizeof(pid_t) * 1);
+    pid[0] = fork();
+    if (pid[0] < 0)
     {
         fprintf(stderr, "Falló el fork().\n%s\n", strerror(errno));
         exit(1);
     }
-    else if (pid == 0)
+    else if (pid[0] == 0)
     {
 
         signal(SIGINT, SIG_DFL);
@@ -150,8 +154,9 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
 
         if (line->background)
         {
-            setpgid(0, 0);
+            setpgid(pid[0], pid[0]);
         }
+
         command_name = line->commands[0].argv[0];
 
         execvp(command_name, line->commands[0].argv);
@@ -161,13 +166,14 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
 
     if (line->background)
     {
-        // Add process to list
-        setpgid(pid, pid);
-        add_process(pid, buf);
+        // Add job to list
+        setpgid(pid[0], pid[0]);
+        add_job(pid, pid[0], buf, line->ncommands);
     }
     else
     {
-        waitpid(pid, NULL, 0);
+        waitpid(pid[0], NULL, 0);
+        free(pid);
     }
 }
 
@@ -255,16 +261,13 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
             }
 
             // Crear grupo de procesos
-            if (line->background)
+            if (i == 0)
             {
-                if (i == 0)
-                {
-                    setpgid(0, 0);
-                }
-                else
-                {
-                    setpgid(0, group_leader);
-                }
+                setpgid(0, 0);
+            }
+            else
+            {
+                setpgid(0, group_leader);
             }
 
             execvp(command_name, line->commands[i].argv);
@@ -272,16 +275,19 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
             exit(EXIT_FAILURE);
         }
 
-        // Proceso Padre dentro del loop asigna los pids al grupo
-        if (i == 0)
+        if (line->background)
         {
-            // el primer proceos se define como lider
-            group_leader = pids[i];
-            setpgid(pids[i], group_leader);
-        }
-        else
-        {
-            setpgid(pids[i], group_leader);
+            // Proceso Padre dentro del loop asigna los pids al grupo
+            if (i == 0)
+            {
+                // el primer proceos se define como lider
+                group_leader = pids[i];
+                setpgid(pids[i], group_leader);
+            }
+            else
+            {
+                setpgid(pids[i], group_leader);
+            }
         }
     }
 
@@ -292,10 +298,10 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
         close(pipes[i][1]);
     }
 
-    // Esperar hijos y liberar memoria para 1 o mas comandos, cuando no seasn: cd
+    // Agregar trabajo (bg) o esperar hijos (fg)
     if (line->background)
     {
-        add_process(group_leader, buf);
+        add_job(pids, group_leader, buf, ncommands);
     }
     else
     {
@@ -303,9 +309,8 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
         {
             waitpid(pids[i], NULL, 0);
         }
+        free(pids);
     }
-
-    free(pids);
     free_pipes_memory(pipes, npipes);
 }
 
@@ -433,13 +438,13 @@ mode_t str_to_octal(char *str)
     return (mode_t)octal_num;
 }
 
-// Agregar Proceso a jobs
-void add_process(pid_t pid, char command_line[BUFFER_SIZE])
+// Agregar un job a la lista
+void add_job(pid_t *pids, pid_t pgid, char command_line[BUFFER_SIZE], int ncommands)
 {
     int slot = -1;
-    for (int i = 0; i < MAX_PROCESSES; i++)
+    for (int i = 0; i < MAX_JOBS; i++)
     {
-        // Si un proceso esta terminado, lo puedo reemplazar de la lista
+        // Si un job a terminado, lo agrego a la lista
         if (jobs_list[i].status == FINISHED)
         {
             slot = i;
@@ -449,34 +454,61 @@ void add_process(pid_t pid, char command_line[BUFFER_SIZE])
 
     if (slot == -1)
     {
-        fprintf(stderr, "Número maximo de procesos alcanzado\n");
+        fprintf(stderr, "Número máximo de trabajos alcanzado\n");
         exit(EXIT_FAILURE);
     }
 
-    jobs_list[slot].pid = pid;
     strcpy(jobs_list[slot].command_line, command_line);
+    jobs_list[slot].pgid = pgid;
+    jobs_list[slot].pids = pids;
+    jobs_list[slot].num_pids = ncommands;
     jobs_list[slot].status = RUNNING;
 
-    printf("[%d] %d\n", slot + 1, pid);
+    printf("[%d] %d\n", slot + 1, pids[0]);
 }
 
 void background_process_check()
 {
-    int wait_status;
-    for (int i = 0; i < MAX_PROCESSES; i++)
+    pid_t pstatus;
+    int running;
+    for (int i = 0; i < MAX_JOBS; i++)
     {
-        if (jobs_list[i].status == RUNNING)
-        {
-            while ((wait_status = waitpid(jobs_list[i].pid, 0, WNOHANG)) > 0)
-            {
-            }
+        if (jobs_list[i].status != RUNNING)
+            continue;
 
-            // Si wait_status == -1 y errno == ECHILD, todos los procesos del grupo han terminado
-            if (wait_status == -1 && errno == ECHILD)
+        if (jobs_list[i].num_pids == 0)
+        {
+            continue;
+        }
+
+        running = 0;
+        for (int j = 0; j < jobs_list[i].num_pids; j++)
+        {
+            if (jobs_list[i].pids[j] == 0)
+                continue;
+            pstatus = waitpid(jobs_list[i].pids[j], NULL, WNOHANG);
+
+            // Compruebo si surgio un error(-1) o termino (>0)
+            if (pstatus == -1 || pstatus > 0)
             {
-                jobs_list[i].status = FINISHED;
-                printf("[%d]+  Finished \t %s\n", i + 1, jobs_list[i].command_line);
+                jobs_list[i].pids[j] = 0;
             }
+            else
+            {
+
+                running++;
+            }
+        }
+
+        // Job terminado
+        if (running == 0)
+        {
+            free(jobs_list[i].pids);
+            jobs_list[i].pids = NULL;
+            jobs_list[i].num_pids = 0;
+            jobs_list[i].status = FINISHED;
+
+            printf("[%d]+  Done \t %s\n", i + 1, jobs_list[i].command_line);
         }
     }
 }
@@ -484,7 +516,7 @@ void background_process_check()
 void jobs()
 {
     Job job;
-    for (int i = 0; i < MAX_PROCESSES; i++)
+    for (int i = 0; i < MAX_JOBS; i++)
     {
         job = jobs_list[i];
         if (job.status == RUNNING)
