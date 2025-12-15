@@ -25,7 +25,6 @@ typedef enum
 
 typedef struct
 {
-    pid_t pgid;
     char command_line[BUFFER_SIZE];
     ProcessStatus status;
     int isInBackground; // 0 si no esta en background, su ID de jobs si lo esta
@@ -45,12 +44,9 @@ void change_dir(tline *line);
 void umask_command(tline *line);
 mode_t str_to_octal(char *str);
 
-void add_job(pid_t *pids, pid_t pgid, int isInBackground, char command_line[BUFFER_SIZE], int ncommands);
-void change_process_status(pid_t pid);
+int add_job(pid_t *pids, int isInBackground, char command_line[BUFFER_SIZE], int ncommands);
 void process_cleanup();
 void jobs();
-
-void handler_sigtstp();
 
 int main(void)
 {
@@ -116,7 +112,7 @@ int main(void)
 void one_command_exec(tline *line, char buf[BUFFER_SIZE])
 {
     pid_t *pid;
-    int file;
+    int file, wstatus, job_pos;
     char *command_name;
 
     pid = malloc(sizeof(pid_t) * 1);
@@ -130,6 +126,7 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
     {
 
         signal(SIGINT, SIG_DFL);
+        signal(SIGTSTP, SIG_DFL);
 
         if (line->redirect_input != NULL)
         {
@@ -152,15 +149,6 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
             close(file);
         }
 
-        if (line->background)
-        {
-            setpgid(pid[0], pid[0]);
-        }
-        else
-        {
-            signal(SIGTSTP, handler_sigtstp);
-        }
-
         command_name = line->commands[0].argv[0];
 
         execvp(command_name, line->commands[0].argv);
@@ -168,16 +156,24 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
         exit(EXIT_FAILURE);
     }
 
+    // Proceso Padre
+
     if (line->background)
     {
         // Add job to list
-        setpgid(pid[0], pid[0]);
-        add_job(pid, pid[0], 1, buf, line->ncommands);
+        add_job(pid, 1, buf, line->ncommands);
     }
     else
     {
-        add_job(pid, pid[0], 0, buf, line->ncommands);
-        waitpid(pid[0], NULL, 0);
+        job_pos = add_job(pid, 0, buf, line->ncommands);
+        waitpid(pid[0], &wstatus, WUNTRACED);
+        if (WIFSTOPPED(wstatus))
+        {
+            // Marcar job como detenido
+            jobs_list[job_pos].status = STOPPED;
+            jobs_list[job_pos].isInBackground = job_pos + 1;
+            printf("\n[%d]+  Stopped \t %s\n", job_pos + 1, jobs_list[job_pos].command_line);
+        }
     }
 }
 
@@ -185,10 +181,9 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
 {
     int **pipes;
     pid_t *pids;
-    int npipes, ncommands;
+    int npipes, ncommands, wstatus;
     char *command_name;
-    int i, j, file;
-    pid_t group_leader = 0;
+    int i, j, file, job_pos, job_stopped;
 
     ncommands = line->ncommands;
     npipes = ncommands - 1; // define number of pipes to create
@@ -218,6 +213,7 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
         {
             // Proceso hijo i
             signal(SIGINT, SIG_DFL);
+            signal(SIGTSTP, SIG_DFL);
 
             // Reedirigr entrada solo al primer proceso
             if (i == 0 && line->redirect_input != NULL)
@@ -264,34 +260,9 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
                 close(pipes[j][1]);
             }
 
-            // Crear grupo de procesos
-            if (i == 0)
-            {
-                setpgid(0, 0);
-            }
-            else
-            {
-                setpgid(0, group_leader);
-            }
-
             execvp(command_name, line->commands[i].argv);
             fprintf(stderr, "%s: No se encuentra el mandato", command_name);
             exit(EXIT_FAILURE);
-        }
-
-        if (line->background)
-        {
-            // Proceso Padre dentro del loop asigna los pids al grupo
-            if (i == 0)
-            {
-                // el primer proceos se define como lider
-                group_leader = pids[i];
-                setpgid(pids[i], group_leader);
-            }
-            else
-            {
-                setpgid(pids[i], group_leader);
-            }
         }
     }
 
@@ -305,15 +276,26 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
     // Agregar trabajo (bg) o esperar hijos (fg)
     if (line->background)
     {
-        add_job(pids, group_leader, 1, buf, ncommands);
+        add_job(pids, 1, buf, ncommands);
     }
     else
     {
-        add_job(pids, group_leader, 0, buf, ncommands);
-
+        job_pos = add_job(pids, 0, buf, ncommands);
+        job_stopped = 0;
         for (i = 0; i < ncommands; i++)
         {
-            waitpid(pids[i], NULL, 0);
+            waitpid(pids[i], &wstatus, WUNTRACED);
+            if (WIFSTOPPED(wstatus))
+            {
+                job_stopped = 1;
+            }
+        }
+
+        if (job_stopped)
+        {
+            jobs_list[job_pos].status = STOPPED;
+            jobs_list[job_pos].isInBackground = job_pos + 1;
+            printf("\n[%d]+  Stopped \t %s\n", job_pos + 1, jobs_list[job_pos].command_line);
         }
     }
     free_pipes_memory(pipes, npipes);
@@ -444,7 +426,7 @@ mode_t str_to_octal(char *str)
 }
 
 // Agregar un job a la lista
-void add_job(pid_t *pids, pid_t pgid, int isInBackground, char command_line[BUFFER_SIZE], int ncommands)
+int add_job(pid_t *pids, int isInBackground, char command_line[BUFFER_SIZE], int ncommands)
 {
     int slot = -1;
     for (int i = 0; i < MAX_JOBS; i++)
@@ -464,7 +446,6 @@ void add_job(pid_t *pids, pid_t pgid, int isInBackground, char command_line[BUFF
     }
 
     strcpy(jobs_list[slot].command_line, command_line);
-    jobs_list[slot].pgid = pgid;
     jobs_list[slot].pids = pids;
     jobs_list[slot].num_pids = ncommands;
     jobs_list[slot].status = RUNNING;
@@ -476,8 +457,10 @@ void add_job(pid_t *pids, pid_t pgid, int isInBackground, char command_line[BUFF
     }
     else
     {
-        jobs_list[slot].isInBackground = isInBackground;
+        jobs_list[slot].isInBackground = 0;
     }
+
+    return slot;
 }
 
 void process_cleanup()
@@ -496,7 +479,9 @@ void process_cleanup()
 
             jobs_list[i].pids = NULL;
             jobs_list[i].num_pids = 0;
+            jobs_list[i].isInBackground = 0;
             jobs_list[i].status = FINISHED;
+
             continue;
         }
 
@@ -514,7 +499,8 @@ void process_cleanup()
         {
             if (jobs_list[i].pids[j] == 0)
                 continue;
-            pstatus = waitpid(jobs_list[i].pids[j], NULL, WNOHANG);
+
+            pstatus = waitpid(jobs_list[i].pids[j], NULL, WNOHANG | WUNTRACED);
 
             // Compruebo si surgio un error(-1) o termino (>0)
             if (pstatus == -1 || pstatus > 0)
@@ -523,7 +509,6 @@ void process_cleanup()
             }
             else
             {
-
                 running++;
             }
         }
@@ -537,7 +522,7 @@ void process_cleanup()
             jobs_list[i].isInBackground = 0;
             jobs_list[i].status = FINISHED;
 
-            printf("[%d]+  Done \t %s\n", i + 1, jobs_list[i].command_line);
+            printf("[%d]+  Done \t %s\n", jobs_list[i].isInBackground, jobs_list[i].command_line);
         }
     }
 }
@@ -547,22 +532,20 @@ void jobs()
     Job job;
     for (int i = 0; i < MAX_JOBS; i++)
     {
+        job = jobs_list[i];
+
         if (!job.isInBackground)
         {
             continue;
         }
-        job = jobs_list[i];
+
         if (job.status == RUNNING)
         {
-            printf("[%d]+  Running \t %s\n", i + 1, job.command_line);
+            printf("[%d]+  Running \t %s\n", job.isInBackground, job.command_line);
         }
         else if (job.status == STOPPED)
         {
-            printf("[%d]-  Stopped \t %s\n", i + 1, job.command_line);
+            printf("[%d]-  Stopped \t %s\n", job.isInBackground, job.command_line);
         }
     }
-}
-
-void handler_sigtstp()
-{
 }
