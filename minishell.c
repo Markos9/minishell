@@ -28,8 +28,8 @@ typedef struct
     pid_t pgid;
     char command_line[BUFFER_SIZE];
     ProcessStatus status;
-
-    pid_t *pids; // Lista de procesos en el trabajo
+    int isInBackground; // 0 si no esta en background, su ID de jobs si lo esta
+    pid_t *pids;        // Lista de procesos en el trabajo
     int num_pids;
 } Job;
 
@@ -45,9 +45,9 @@ void change_dir(tline *line);
 void umask_command(tline *line);
 mode_t str_to_octal(char *str);
 
-void add_job(pid_t *pids, pid_t pgid, char command_line[BUFFER_SIZE], int ncommands);
+void add_job(pid_t *pids, pid_t pgid, int isInBackground, char command_line[BUFFER_SIZE], int ncommands);
 void change_process_status(pid_t pid);
-void background_process_check();
+void process_cleanup();
 void jobs();
 
 void handler_sigtstp();
@@ -69,7 +69,7 @@ int main(void)
     printf("msh> ");
     while (fgets(buf, BUFFER_SIZE, stdin))
     {
-        background_process_check();
+        process_cleanup();
         line = tokenize(buf);
         if (line == NULL || line->ncommands == 0)
         {
@@ -156,6 +156,10 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
         {
             setpgid(pid[0], pid[0]);
         }
+        else
+        {
+            signal(SIGTSTP, handler_sigtstp);
+        }
 
         command_name = line->commands[0].argv[0];
 
@@ -168,12 +172,12 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
     {
         // Add job to list
         setpgid(pid[0], pid[0]);
-        add_job(pid, pid[0], buf, line->ncommands);
+        add_job(pid, pid[0], 1, buf, line->ncommands);
     }
     else
     {
+        add_job(pid, pid[0], 0, buf, line->ncommands);
         waitpid(pid[0], NULL, 0);
-        free(pid);
     }
 }
 
@@ -301,15 +305,16 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
     // Agregar trabajo (bg) o esperar hijos (fg)
     if (line->background)
     {
-        add_job(pids, group_leader, buf, ncommands);
+        add_job(pids, group_leader, 1, buf, ncommands);
     }
     else
     {
+        add_job(pids, group_leader, 0, buf, ncommands);
+
         for (i = 0; i < ncommands; i++)
         {
             waitpid(pids[i], NULL, 0);
         }
-        free(pids);
     }
     free_pipes_memory(pipes, npipes);
 }
@@ -439,7 +444,7 @@ mode_t str_to_octal(char *str)
 }
 
 // Agregar un job a la lista
-void add_job(pid_t *pids, pid_t pgid, char command_line[BUFFER_SIZE], int ncommands)
+void add_job(pid_t *pids, pid_t pgid, int isInBackground, char command_line[BUFFER_SIZE], int ncommands)
 {
     int slot = -1;
     for (int i = 0; i < MAX_JOBS; i++)
@@ -464,15 +469,38 @@ void add_job(pid_t *pids, pid_t pgid, char command_line[BUFFER_SIZE], int ncomma
     jobs_list[slot].num_pids = ncommands;
     jobs_list[slot].status = RUNNING;
 
-    printf("[%d] %d\n", slot + 1, pids[0]);
+    if (isInBackground)
+    {
+        jobs_list[slot].isInBackground = slot + 1;
+        printf("[%d] %d\n", slot + 1, pids[0]);
+    }
+    else
+    {
+        jobs_list[slot].isInBackground = isInBackground;
+    }
 }
 
-void background_process_check()
+void process_cleanup()
 {
     pid_t pstatus;
     int running;
     for (int i = 0; i < MAX_JOBS; i++)
     {
+        // Limpiar proceso en fg
+        if (!jobs_list[i].isInBackground)
+        {
+            if (jobs_list[i].pids != NULL)
+            {
+                free(jobs_list[i].pids);
+            }
+
+            jobs_list[i].pids = NULL;
+            jobs_list[i].num_pids = 0;
+            jobs_list[i].status = FINISHED;
+            continue;
+        }
+
+        // Limpiar resto
         if (jobs_list[i].status != RUNNING)
             continue;
 
@@ -506,6 +534,7 @@ void background_process_check()
             free(jobs_list[i].pids);
             jobs_list[i].pids = NULL;
             jobs_list[i].num_pids = 0;
+            jobs_list[i].isInBackground = 0;
             jobs_list[i].status = FINISHED;
 
             printf("[%d]+  Done \t %s\n", i + 1, jobs_list[i].command_line);
@@ -518,6 +547,10 @@ void jobs()
     Job job;
     for (int i = 0; i < MAX_JOBS; i++)
     {
+        if (!job.isInBackground)
+        {
+            continue;
+        }
         job = jobs_list[i];
         if (job.status == RUNNING)
         {
