@@ -47,6 +47,8 @@ mode_t str_to_octal(char *str);
 int add_job(pid_t *pids, int isInBackground, char command_line[BUFFER_SIZE], int ncommands);
 void process_cleanup();
 void jobs();
+int jobs_list_empty();
+void bg(tline *line);
 
 int main(void)
 {
@@ -86,6 +88,10 @@ int main(void)
         else if (strcmp(line->commands[0].argv[0], "jobs") == 0)
         {
             jobs();
+        }
+        else if (strcmp(line->commands[0].argv[0], "bg") == 0)
+        {
+            bg(line);
         }
         else
         {
@@ -438,8 +444,7 @@ int add_job(pid_t *pids, int isInBackground, char command_line[BUFFER_SIZE], int
             break;
         }
     }
-
-    if (slot == -1)
+    if (slot >= MAX_JOBS - 1)
     {
         fprintf(stderr, "Número máximo de trabajos alcanzado\n");
         exit(EXIT_FAILURE);
@@ -470,7 +475,7 @@ void process_cleanup()
     for (int i = 0; i < MAX_JOBS; i++)
     {
         // Limpiar proceso en fg
-        if (!jobs_list[i].isInBackground)
+        if (!jobs_list[i].isInBackground && jobs_list[i].pids != NULL)
         {
             if (jobs_list[i].pids != NULL)
             {
@@ -519,10 +524,10 @@ void process_cleanup()
             free(jobs_list[i].pids);
             jobs_list[i].pids = NULL;
             jobs_list[i].num_pids = 0;
-            jobs_list[i].isInBackground = 0;
             jobs_list[i].status = FINISHED;
 
             printf("[%d]+  Done \t %s\n", jobs_list[i].isInBackground, jobs_list[i].command_line);
+            jobs_list[i].isInBackground = 0;
         }
     }
 }
@@ -548,4 +553,87 @@ void jobs()
             printf("[%d]-  Stopped \t %s\n", job.isInBackground, job.command_line);
         }
     }
+}
+
+int jobs_list_empty()
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (jobs_list[i].pids != NULL)
+        {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+void bg(tline *line)
+{
+    int job_pos = -1;
+    int job_id = -1;
+    size_t len;
+
+    // Lista vacia nada que reanudar
+    if (jobs_list_empty())
+    {
+        return;
+    }
+
+    if (line->ncommands != 1)
+    {
+        return;
+    }
+
+    if (line->commands[0].argc < 1 || line->commands[0].argc > 2)
+    {
+        return;
+    }
+
+    // Parte 1, encontrar el Job
+    if (line->commands[0].argc == 1)
+    {
+        // Sin argumento, reanudar el ultimo agregado
+        for (int i = MAX_JOBS - 1; i >= 0; i--)
+        {
+            if (jobs_list[i].status == STOPPED)
+            {
+                job_pos = i;
+                break;
+            }
+        }
+    }
+    else
+    {
+        // Seleccionar jobs id
+        job_id = atoi(line->commands[0].argv[1]);
+
+        if (job_id < 1 || job_id > MAX_JOBS)
+        {
+            return;
+        }
+
+        job_pos = job_id - 1;
+        if (jobs_list[job_pos].status != STOPPED)
+        {
+            return;
+        }
+    }
+
+    // Parte 2, depsertar los proceos
+    for (int i = 0; i < jobs_list[job_pos].num_pids; i++)
+    {
+        kill(jobs_list[job_pos].pids[i], SIGCONT);
+    }
+
+    jobs_list[job_pos].status = RUNNING;
+
+    len = strlen(jobs_list[job_pos].command_line);
+    if (len > 0 && jobs_list[job_pos].command_line[len - 1] == '\n')
+    {
+        jobs_list[job_pos].command_line[len - 1] = '\0';
+    }
+    strcat(jobs_list[job_pos].command_line, " &\n");
+
+    printf("[%d]+ %s\n", jobs_list[job_pos].isInBackground, jobs_list[job_pos].command_line);
 }
