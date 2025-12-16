@@ -49,6 +49,7 @@ void process_cleanup();
 void jobs();
 int jobs_list_empty();
 void bg(tline *line);
+void terminate_jobs();
 
 int main(void)
 {
@@ -92,6 +93,11 @@ int main(void)
         else if (strcmp(line->commands[0].argv[0], "bg") == 0)
         {
             bg(line);
+        }
+        else if (strcmp(line->commands[0].argv[0], "exit") == 0)
+        {
+            terminate_jobs();
+            exit(EXIT_SUCCESS);
         }
         else
         {
@@ -636,4 +642,15 @@ void bg(tline *line)
     strcat(jobs_list[job_pos].command_line, " &\n");
 
     printf("[%d]+ %s\n", jobs_list[job_pos].isInBackground, jobs_list[job_pos].command_line);
+}
+
+void terminate_jobs()
+{
+    for (int i = 0; i < MAX_JOBS; i++)
+    {
+        if (jobs_list[i].pids != NULL)
+        {
+            free(jobs_list[i].pids);
+        }
+    }
 }
