@@ -27,7 +27,7 @@ typedef struct
 {
     char command_line[BUFFER_SIZE];
     ProcessStatus status;
-    int isInBackground; // 0 si no esta en background, su ID de jobs si lo esta
+    int isInBackground; // 0 si no esta en background,o su ID de jobs si lo esta
     pid_t *pids;        // Lista de procesos en el trabajo
     int num_pids;
 } Job;
@@ -45,26 +45,32 @@ void umask_command(tline *line);
 mode_t str_to_octal(char *str);
 
 int add_job(pid_t *pids, int isInBackground, char command_line[BUFFER_SIZE], int ncommands);
-void process_cleanup();
+void process_cleanup(); // Mantiene la lista de trabajos eliminando trabajos de ella correctamente
 void jobs();
-int jobs_list_empty();
+int jobs_list_empty(); // Comprueba si la lista de jobs esta vacia
 void bg(tline *line);
-void terminate_jobs();
+void terminate_jobs(); // Libera la memoria de cada job antes de salir
 
 int main(void)
 {
-    char buf[BUFFER_SIZE];
-    tline *line;
-    int ncommands;
+    char buf[BUFFER_SIZE] = {0};
+    tline *line = NULL;
+    int ncommands = 0;
 
     signal(SIGINT, SIG_IGN);
     signal(SIGTSTP, SIG_IGN);
-    // inicializar lista de procesos en segundo plano
+
+    // Inicializar lista de trabajos
     for (int i = 0; i < MAX_JOBS; i++)
     {
+        jobs_list[i].isInBackground = 0;
+        jobs_list[i].num_pids = 0;
+        jobs_list[i].pids = NULL;
+        jobs_list[i].command_line[0] = '\0';
         jobs_list[i].status = FINISHED;
     }
 
+    // Bucle principal
     printf("msh> ");
     while (fgets(buf, BUFFER_SIZE, stdin))
     {
@@ -81,7 +87,6 @@ int main(void)
         {
             change_dir(line);
         }
-        // Umask
         else if (strcmp(line->commands[0].argv[0], "umask") == 0)
         {
             umask_command(line);
@@ -123,9 +128,11 @@ int main(void)
 
 void one_command_exec(tline *line, char buf[BUFFER_SIZE])
 {
-    pid_t *pid;
-    int file, wstatus, job_pos;
-    char *command_name;
+    pid_t *pid = NULL;
+    int file = 0;
+    int wstatus = 0;
+    int job_pos = -1;
+    char *command_name = NULL;
 
     pid = malloc(sizeof(pid_t) * 1);
     pid[0] = fork();
@@ -137,8 +144,11 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
     else if (pid[0] == 0)
     {
 
-        signal(SIGINT, SIG_DFL);
-        signal(SIGTSTP, SIG_DFL);
+        if (!line->background)
+        {
+            signal(SIGINT, SIG_DFL);
+            signal(SIGTSTP, SIG_DFL);
+        }
 
         if (line->redirect_input != NULL)
         {
@@ -191,16 +201,22 @@ void one_command_exec(tline *line, char buf[BUFFER_SIZE])
 
 void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
 {
-    int **pipes;
-    pid_t *pids;
-    int npipes, ncommands, wstatus;
-    char *command_name;
-    int i, j, file, job_pos, job_stopped;
+    int **pipes = NULL; // 0 lectura, 1 escritura
+    pid_t *pids = NULL;
+    int npipes = 0;
+    int ncommands = 0;
+    int wstatus = 0;
+    char *command_name = NULL;
+    int i = 0;
+    int j = 0;
+    int file = 0;
+    int job_pos = -1;
+    int job_stopped = -1;
 
     ncommands = line->ncommands;
-    npipes = ncommands - 1; // define number of pipes to create
+    npipes = ncommands - 1;
 
-    pids = malloc(sizeof(pid_t) * ncommands); // Reservar memoria para los pids, de ncommnads
+    pids = malloc(sizeof(pid_t) * ncommands);
     pipes = malloc(sizeof(int *) * npipes);
 
     /* Crear tuberias para ejecutar line->ncommands */
@@ -224,8 +240,11 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
         else if (pids[i] == 0)
         {
             // Proceso hijo i
-            signal(SIGINT, SIG_DFL);
-            signal(SIGTSTP, SIG_DFL);
+            if (!line->background)
+            {
+                signal(SIGINT, SIG_DFL);
+                signal(SIGTSTP, SIG_DFL);
+            }
 
             // Reedirigr entrada solo al primer proceso
             if (i == 0 && line->redirect_input != NULL)
@@ -253,13 +272,13 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
                 }
             }
 
-            // Primer proceso no se le reedirige entrada a un pipe
+            // Primer proceso no se le redirige entrada a un pipe
             if (i != 0)
             {
                 dup2(pipes[i - 1][0], STDIN_FILENO);
             }
 
-            // Ultimo proceso no se le reedirige la salida a un pipe
+            // Ultimo proceso no se le redirige la salida a un pipe
             if (i != ncommands - 1)
             {
                 dup2(pipes[i][1], STDOUT_FILENO);
@@ -293,6 +312,8 @@ void multiple_commands_exec(tline *line, char buf[BUFFER_SIZE])
     else
     {
         job_pos = add_job(pids, 0, buf, ncommands);
+
+        // Esperar cada hijo y manejar si se detiene
         job_stopped = 0;
         for (i = 0; i < ncommands; i++)
         {
@@ -333,7 +354,9 @@ void free_pipes_memory(int **pipes, int npipes)
 
 void change_dir(tline *line)
 {
-    char *path = getenv("HOME");
+    char *path = NULL;
+
+    path = getenv("HOME");
     if (line->commands[0].argc > 2)
     {
         fprintf(stderr, "cd: demasiados argumentos\n");
@@ -355,8 +378,10 @@ void change_dir(tline *line)
 
 int open_file(char *filename, int flags)
 {
-    int fd;
-    int access_mode = flags & O_ACCMODE;
+    int fd = 0;
+    int access_mode = 0;
+
+    access_mode = flags & O_ACCMODE; // Extraer de flags solo si es de escritura o lectura
 
     if (access_mode == O_RDONLY)
     {
@@ -369,7 +394,7 @@ int open_file(char *filename, int flags)
 
     if (fd == -1)
     {
-        fprintf(stderr, "'%s': Error\n%s\n",
+        fprintf(stderr, "'%s': Error. %s\n",
                 filename,
                 strerror(errno));
         exit(EXIT_FAILURE);
@@ -380,7 +405,7 @@ int open_file(char *filename, int flags)
 
 void umask_command(tline *line)
 {
-    mode_t mask;
+    mode_t mask = 0;
 
     if (line->commands[0].argc > 2)
     {
@@ -413,8 +438,8 @@ void umask_command(tline *line)
 
 mode_t str_to_octal(char *str)
 {
-    long long_val;
-    mode_t octal_num;
+    long long_val = 0;
+    mode_t octal_num = 0;
 
     // Comrporbar que es un octal
     if (str == NULL || *str == '\0')
@@ -437,7 +462,6 @@ mode_t str_to_octal(char *str)
     return (mode_t)octal_num;
 }
 
-// Agregar un job a la lista
 int add_job(pid_t *pids, int isInBackground, char command_line[BUFFER_SIZE], int ncommands)
 {
     int slot = -1;
@@ -476,12 +500,22 @@ int add_job(pid_t *pids, int isInBackground, char command_line[BUFFER_SIZE], int
 
 void process_cleanup()
 {
-    pid_t pstatus;
-    int running;
+    pid_t pstatus = 0;
+    int running = 0;
+
     for (int i = 0; i < MAX_JOBS; i++)
     {
+
+        if (jobs_list[i].status != RUNNING)
+            continue;
+
+        if (jobs_list[i].num_pids == 0)
+        {
+            continue;
+        }
+
         // Limpiar proceso en fg
-        if (!jobs_list[i].isInBackground && jobs_list[i].pids != NULL)
+        if (!jobs_list[i].isInBackground)
         {
             if (jobs_list[i].pids != NULL)
             {
@@ -496,24 +530,16 @@ void process_cleanup()
             continue;
         }
 
-        // Limpiar resto
-        if (jobs_list[i].status != RUNNING)
-            continue;
-
-        if (jobs_list[i].num_pids == 0)
-        {
-            continue;
-        }
-
         running = 0;
+        // Limpiar procesos en bg
         for (int j = 0; j < jobs_list[i].num_pids; j++)
         {
             if (jobs_list[i].pids[j] == 0)
                 continue;
 
-            pstatus = waitpid(jobs_list[i].pids[j], NULL, WNOHANG | WUNTRACED);
+            pstatus = waitpid(jobs_list[i].pids[j], NULL, WNOHANG);
 
-            // Compruebo si surgio un error(-1) o termino (>0)
+            // Comprobar si surgio un error(-1) o termino (>0)
             if (pstatus == -1 || pstatus > 0)
             {
                 jobs_list[i].pids[j] = 0;
@@ -540,7 +566,7 @@ void process_cleanup()
 
 void jobs()
 {
-    Job job;
+    Job job = {0};
     for (int i = 0; i < MAX_JOBS; i++)
     {
         job = jobs_list[i];
@@ -578,7 +604,7 @@ void bg(tline *line)
 {
     int job_pos = -1;
     int job_id = -1;
-    size_t len;
+    size_t len = 0;
 
     // Lista vacia nada que reanudar
     if (jobs_list_empty())
